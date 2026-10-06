@@ -1,0 +1,105 @@
+name: add task from phone
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Task title"
+        required: true
+        type: string
+      subject:
+        description: "Subject (Personal, Career, MATH2460, cmsc351)"
+        required: false
+        default: "Personal"
+        type: string
+      due:
+        description: "Due date/time (YYYY-MM-DD HH:MM or YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      importance:
+        description: "Importance"
+        required: false
+        default: "med"
+        type: choice
+        options: [high, med, low]
+      hours:
+        description: "Estimated hours"
+        required: false
+        default: ""
+        type: string
+      notes:
+        description: "Notes"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  add-task:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Write incoming task file
+        run: |
+          mkdir -p incoming
+          TIMESTAMP=$(date +%s%3N)   # milliseconds = unique filename
+          python3 - <<'EOF'
+          import json, os, sys
+          from datetime import datetime
+
+          importance_map = {"high": 1, "med": 2, "low": 3}
+          hours_raw = os.environ.get("HOURS", "").strip()
+
+          task = {
+            "title":      os.environ["TITLE"],
+            "subject":    os.environ.get("SUBJECT", "Personal"),
+            "due_at":     os.environ.get("DUE", "").strip() or None,
+            "importance": importance_map.get(os.environ.get("IMPORTANCE", "med"), 2),
+            "est_hours":  float(hours_raw) if hours_raw else None,
+            "notes":      os.environ.get("NOTES", "").strip(),
+            "status":     "todo",
+            "pinned":     0,
+            "parking_lot": 0,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source":     "phone",
+          }
+
+          ts = os.environ["TIMESTAMP"]
+          path = f"incoming/{ts}.json"
+          with open(path, "w") as f:
+            json.dump(task, f, indent=2)
+          print(f"Wrote {path}")
+          EOF
+        env:
+          TITLE:      ${{ github.event.inputs.title }}
+          SUBJECT:    ${{ github.event.inputs.subject }}
+          DUE:        ${{ github.event.inputs.due }}
+          IMPORTANCE: ${{ github.event.inputs.importance }}
+          HOURS:      ${{ github.event.inputs.hours }}
+          NOTES:      ${{ github.event.inputs.notes }}
+          TIMESTAMP:  ${{ github.run_id }}
+
+      - name: Commit incoming task
+        run: |
+          git config user.name  "taskman-bot"
+          git config user.email "taskman-bot@users.noreply.github.com"
+          git add incoming/
+          git commit -m "task: ${{ github.event.inputs.title }}"
+          git push
+
+      - name: Send ntfy confirmation
+        if: ${{ env.NTFY_TOPIC != '' }}
+        run: |
+          curl -s -X POST \
+            -H "Title: ✅ Task added" \
+            -H "Priority: low" \
+            -H "Tags: white_check_mark" \
+            -d "\"${{ github.event.inputs.title }}\" saved to taskman" \
+            "${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}/${{ secrets.NTFY_TOPIC }}" || true
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
